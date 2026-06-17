@@ -26,7 +26,8 @@ const NEW_IMPL_ARTIFACT = require("../artifacts/contracts/MyContract.sol/MyContr
 const MIGRATION_CALLDATA = "0x";
 // -------------------------
 
-const proxyAdminArtifact = require("../artifacts/@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol/ProxyAdmin.json");
+// Precompiled artifact shipped with the package (no local compile needed).
+const proxyAdminArtifact = require("@openzeppelin/contracts/build/contracts/ProxyAdmin.json");
 
 async function main() {
   const yourRPCNode = hre.network.config.url;

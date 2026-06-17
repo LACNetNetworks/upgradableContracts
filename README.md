@@ -65,21 +65,22 @@ for the proxy-storage reason above.
 | 0    | `trustedForwarder` | `BaseRelayRecipient`|
 | 1    | `value`            | `MyContract`        |
 
-### `contracts/ProxyImport.sol`
-A one-line file that imports OpenZeppelin's `TransparentUpgradeableProxy`. Its
-**only purpose** is to make Hardhat compile the proxy + `ProxyAdmin` artifacts so
-the deployment scripts can instantiate them directly (see workaround below).
-It deploys no logic of its own.
+> **Proxy artifacts:** the deploy/upgrade scripts don't compile the proxy
+> contracts locally. They load the **precompiled artifacts shipped with the
+> package** from `@openzeppelin/contracts/build/contracts/`
+> (`TransparentUpgradeableProxy.json`, `ProxyAdmin.json`), so no helper import
+> contract is needed.
 
 ---
 
 ## Configuration
 
 ### `hardhat.config.js`
-- **Solidity compiler bumped `0.8.20` → `0.8.22`.** OpenZeppelin Contracts v5.2
-  proxy contracts (`TransparentUpgradeableProxy`, `ProxyAdmin`,
-  `ERC1967Utils`) declare `pragma solidity ^0.8.22`. The project contracts use
-  `^0.8.0` / `>=0.8.0 <0.9.0`, so they remain compatible with the bump.
+- **Solidity compiler set to `0.8.22`.** This matches the version the live
+  implementation was compiled with. Only the project contracts are compiled
+  (`BaseRelayRecipient`, `MyContract`, and OZ's upgradeable `Initializable`),
+  all compatible with `0.8.22`. The proxy contracts are not compiled here — the
+  scripts use the package's precompiled artifacts instead.
 - Two networks are configured, **`testnet`** and **`mainnet`**, both using
   `@lacchain/gas-model-provider` (`LacchainGasModelProvider`) with the validator
   node address and signer key.
@@ -252,7 +253,6 @@ authority.
 contracts/
   BaseRelayRecipient.sol   EIP-2771 recipient base (initializer-based forwarder)
   MyContract.sol           App contract, upgradeable, inherits BaseRelayRecipient
-  ProxyImport.sol          Pulls in proxy artifacts for manual deployment
 scripts/
   deploy-manual.js         Manual impl + proxy deployment (Lacchain workaround)
   force-import.js          Register proxy in the OpenZeppelin manifest

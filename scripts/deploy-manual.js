@@ -8,7 +8,8 @@ const { ethers } = hre;
 const { LacchainProvider, LacchainSigner } = require("@lacchain/gas-model-provider");
 
 const myContractArtifact = require("../artifacts/contracts/MyContract.sol/MyContract.json");
-const proxyArtifact = require("../artifacts/@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol/TransparentUpgradeableProxy.json");
+// Precompiled artifact shipped with the package (no local compile needed).
+const proxyArtifact = require("@openzeppelin/contracts/build/contracts/TransparentUpgradeableProxy.json");
 
 // Trusted forwarder the contract accepts relayed calls from (mainnet).
 const TRUSTED_FORWARDER = "0xEAA5420AF59305c5ecacCB38fcDe70198001d147";

@@ -20,8 +20,8 @@ const PROXY_ADDRESS = "0xbACfDa212f9989D3A2c75108Fe9D96638ACdceaF";
 const NEW_OWNER = ""; // <-- set to the new owner's address (0x...)
 // -------------------------
 
-// Precompiled artifact shipped with the package (no local compile needed).
-const proxyAdminArtifact = require("@openzeppelin/contracts/build/contracts/ProxyAdmin.json");
+// Compiled locally (paris target, no PUSH0) — required for LACChain.
+const proxyAdminArtifact = require("../artifacts/@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol/ProxyAdmin.json");
 
 async function main() {
   if (!ethers.isAddress(NEW_OWNER)) {

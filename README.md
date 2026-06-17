@@ -65,22 +65,26 @@ for the proxy-storage reason above.
 | 0    | `trustedForwarder` | `BaseRelayRecipient`|
 | 1    | `value`            | `MyContract`        |
 
-> **Proxy artifacts:** the deploy/upgrade scripts don't compile the proxy
-> contracts locally. They load the **precompiled artifacts shipped with the
-> package** from `@openzeppelin/contracts/build/contracts/`
-> (`TransparentUpgradeableProxy.json`, `ProxyAdmin.json`), so no helper import
-> contract is needed.
+### `contracts/ProxyImport.sol`
+A one-line file that imports OpenZeppelin's `TransparentUpgradeableProxy`. Its
+**only purpose** is to make Hardhat compile the proxy + `ProxyAdmin` artifacts
+**locally with our `paris` EVM target**, so the deploy scripts can instantiate
+them. We deliberately do **not** use OpenZeppelin's prebuilt artifacts — see the
+[PUSH0 constraint](#layer-2-the-push0-opcode-evm-compatibility) below. It deploys
+no logic of its own.
 
 ---
 
 ## Configuration
 
 ### `hardhat.config.js`
-- **Solidity compiler set to `0.8.22`.** This matches the version the live
-  implementation was compiled with. Only the project contracts are compiled
-  (`BaseRelayRecipient`, `MyContract`, and OZ's upgradeable `Initializable`),
-  all compatible with `0.8.22`. The proxy contracts are not compiled here — the
-  scripts use the package's precompiled artifacts instead.
+- **Solidity compiler `0.8.22`, with `evmVersion` pinned to `"paris"`.** The
+  version bump is required by OpenZeppelin v5.2 proxy contracts (which declare
+  `pragma solidity ^0.8.22`). The `paris` target is **mandatory for LACChain**:
+  it prevents the compiler from emitting the `PUSH0` opcode, which LACChain's EVM
+  does not support (see the PUSH0 section below). All project contracts
+  (`BaseRelayRecipient`, `MyContract`) and the locally-compiled proxy contracts
+  build cleanly under these settings.
 - Two networks are configured, **`testnet`** and **`mainnet`**, both using
   `@lacchain/gas-model-provider` (`LacchainGasModelProvider`) with the validator
   node address and signer key.
@@ -95,17 +99,19 @@ for the proxy-storage reason above.
 
 ## The LACChain deployment workaround (important)
 
-The headline adaptation in this project. Standard OpenZeppelin upgrade tooling
-**does not work out of the box** with the LACChain gas-model provider.
+Two independent adaptations were needed to deploy here. Standard OpenZeppelin
+upgrade tooling **does not work out of the box** with LACChain — first because of
+how the gas-model provider relays transactions, and second because of an EVM
+opcode incompatibility.
 
-### The problem
+### Layer 1: address prediction (the gas-model provider)
 The Lacchain gas model **relays deployment transactions through the validator
 node** rather than creating contracts directly from the EOA. Standard tooling
 predicts a new contract's address as `keccak(deployer_EOA, nonce)` (the CREATE
 formula). Because the *actual* creator is the node — not the EOA — the contract
 lands at a **different address than predicted**.
 
-This broke deployment in two layers:
+This broke deployment in two ways:
 
 1. **`@openzeppelin/hardhat-upgrades` (`deployProxy`)** failed with:
    ```
@@ -117,9 +123,8 @@ This broke deployment in two layers:
    `ERC1967InvalidImplementation(0x…)` — the proxy rejected the implementation
    address because ethers had *also* handed back the predicted (empty) address.
 
-### The fix
-**Read the real deployed address from the transaction receipt's
-`contractAddress` field** (which the node populates with where it actually
+**The fix:** read the real deployed address from the transaction receipt's
+`contractAddress` field (which the node populates with where it actually
 deployed) instead of trusting the predicted address. The scripts deploy, wait
 for the receipt, take `receipt.contractAddress`, and verify code exists there
 before continuing:
@@ -132,6 +137,40 @@ if ((await provider.getCode(address)) === "0x") throw new Error("no code");
 ```
 
 The proxy is then assembled manually rather than via `deployProxy`.
+
+### Layer 2: the PUSH0 opcode (EVM compatibility)
+`PUSH0` (opcode `0x5f`) is an instruction introduced in the Ethereum **Shanghai**
+hardfork (EIP-3855). The Solidity compiler emits it by default when the EVM
+target is `shanghai` or newer (which is the default from solc 0.8.20 onward in
+many setups, and is what OpenZeppelin uses to build the artifacts it ships).
+
+**LACChain's EVM is older than Shanghai and does not implement `PUSH0`.** Any
+bytecode containing it reverts on execution. This surfaced as a deployment that
+*looked* like it should work but failed at gas estimation:
+
+```
+Error: missing revert data (action="estimateGas", ...)
+```
+
+The implementation deployed fine (our own contracts were compiled `paris`), but
+the **`TransparentUpgradeableProxy`** failed — because we had briefly switched to
+OpenZeppelin's **prebuilt** proxy artifacts, which are compiled with solc 0.8.24
+targeting a Shanghai+ EVM and contain ~99 `PUSH0` opcodes. The node could not
+execute that bytecode.
+
+**The fix (two parts):**
+
+1. **Pin `evmVersion: "paris"`** in `hardhat.config.js`. `paris` predates
+   Shanghai, so the compiler never emits `PUSH0`.
+2. **Compile the proxy contracts locally** (via `contracts/ProxyImport.sol`)
+   instead of using OpenZeppelin's prebuilt artifacts — so the proxy bytecode is
+   also produced under the `paris` target. The deploy/upgrade scripts load these
+   locally-compiled artifacts from `artifacts/@openzeppelin/...`.
+
+> **Takeaway:** do not replace the locally-compiled proxy artifacts with
+> `@openzeppelin/contracts/build/contracts/*.json`. Those are PUSH0-laden and
+> will revert on LACChain. `ProxyImport.sol` + `evmVersion: "paris"` exist
+> specifically to avoid this.
 
 ---
 
@@ -253,13 +292,14 @@ authority.
 contracts/
   BaseRelayRecipient.sol   EIP-2771 recipient base (initializer-based forwarder)
   MyContract.sol           App contract, upgradeable, inherits BaseRelayRecipient
+  ProxyImport.sol          Compiles proxy artifacts locally (paris/no PUSH0)
 scripts/
   deploy-manual.js         Manual impl + proxy deployment (Lacchain workaround)
   force-import.js          Register proxy in the OpenZeppelin manifest
   upgrade.js               Validate + deploy new impl + upgrade via ProxyAdmin
   transfer-ownership.js    Transfer ProxyAdmin ownership (e.g. on key rotation)
 .openzeppelin/             OpenZeppelin upgrade manifests (deployment state)
-hardhat.config.js          Solidity 0.8.22, LACChain networks, .env loader
+hardhat.config.js          Solidity 0.8.22 (evmVersion paris), networks, .env loader
 address.js                 Standalone helper to generate a fresh keypair
 .env.example               Template for the gitignored .env (PRIVATE_KEY)
 ```

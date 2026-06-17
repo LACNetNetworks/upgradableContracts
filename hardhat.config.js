@@ -27,7 +27,17 @@ if (!PRIVATE_KEY) {
 }
 
 module.exports = {
-solidity: "0.8.22", // Min version required by OpenZeppelin v5.2 proxy contracts
+  solidity: {
+    version: "0.8.22", // Min version required by OpenZeppelin v5.2 proxy contracts
+    settings: {
+      // LACChain's EVM does NOT support the PUSH0 opcode (Shanghai+). Pin the
+      // target to "paris" so neither our contracts nor the locally-compiled
+      // proxy contracts emit PUSH0. (This is why we compile the proxies here via
+      // ProxyImport.sol instead of using OpenZeppelin's prebuilt artifacts,
+      // which are built with PUSH0 and revert on LACChain.)
+      evmVersion: "paris",
+    },
+  },
   networks: {
     testnet: {
       url: "https://testnet-writer1.l-net.io", // URL del nodo LACChain

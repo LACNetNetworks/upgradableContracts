@@ -1,232 +1,141 @@
-# UpContract — EIP-2771 upgradeable contract on LACChain
+# UpContract — custom UUPS upgradeable contract on LACChain (no OpenZeppelin)
 
-An upgradeable smart contract (`MyContract`) that supports **meta-transactions**
-(gasless / relayed calls) via an EIP-2771-style trusted forwarder, deployed
-behind a transparent proxy on **LACChain** using the Lacchain gas-model provider.
+> **Branch `custom-uups-proxy`.** This branch implements upgradeability with a
+> **fully custom, dependency-free UUPS stack** — no OpenZeppelin contracts. For
+> the OpenZeppelin transparent-proxy version, see the `main` branch.
 
-This README documents not just *what* the project contains, but *why* each piece
-was modified or adapted — in particular the workarounds required to deploy an
-OpenZeppelin upgradeable proxy through the LACChain gas model.
+An upgradeable contract (`MyContract`) supporting **meta-transactions** (EIP-2771)
+behind a minimal **UUPS** proxy written from scratch, deployed on **LACChain**
+via the Lacchain gas-model provider. Everything is compiled with our own
+toolchain so it stays compatible with LACChain's EVM.
+
+---
+
+## Why UUPS, and why custom
+
+- **UUPS** keeps the proxy minimal: it only delegatecalls. The upgrade logic
+  (`upgradeTo` / `upgradeToAndCall`) lives in the **implementation** and is gated
+  by an owner. There is no separate ProxyAdmin contract.
+- **No OpenZeppelin**: we control the source and compiler settings, which is what
+  makes it deployable on LACChain (see the three constraints below). OZ's
+  prebuilt artifacts are not usable here, and its tooling assumes standard
+  deployment semantics that the gas-model provider breaks.
 
 ---
 
 ## Contracts
 
-### `contracts/BaseRelayRecipient.sol`
-A base contract that lets any inheriting contract receive **relayed
-transactions**. A relayer pays the gas and forwards the call through a trusted
-*forwarder*; the recipient recovers the original sender via `_msgSender()`
-(querying the forwarder's `getRelayHub()` / `getMsgSender()`), so subclasses use
-`_msgSender()` instead of `msg.sender`.
+| File | Role |
+|------|------|
+| `Context.sol` | Provides `_msgSender()` (virtual). Default `msg.sender`; overridden for EIP-2771. |
+| `Initializable.sol` | Initializer / reinitializer / `_disableInitializers` (proxy-safe init). |
+| `Ownable.sol` | Owner-based access control; the owner is the upgrade authority. |
+| `BaseRelayRecipient.sol` | EIP-2771 recipient; overrides `_msgSender()` to recover the relayed sender. |
+| `UUPSUpgradeable.sol` | Minimal UUPS: EIP-1967 slot, `upgradeTo`/`upgradeToAndCall`, `onlyProxy`, bricking check. |
+| `Proxy.sol` | Minimal EIP-1967 proxy (delegatecall fallback + init in constructor). No admin. |
+| `MyContract.sol` | The app contract wiring all of the above together. |
 
-**What changed and why:**
+**Storage layout (append-only across upgrades):**
 
-1. **Trusted forwarder is now a parameter, not a hardcoded address.**
-   Originally the forwarder address was hardcoded:
-   ```solidity
-   address internal trustedForwarder = 0xEAA5420A...d147; // mainnet
-   ```
-   This baked a single network's forwarder into the bytecode, making the
-   contract non-portable across networks/environments and impossible to
-   configure at deploy time. It is now supplied externally.
+| Slot | Variable                     | Source              |
+|------|------------------------------|---------------------|
+| 0    | `_initialized`/`_initializing` | `Initializable`   |
+| 1    | `trustedForwarder`           | `BaseRelayRecipient`|
+| 2    | `_owner`                     | `Ownable`           |
+| 3    | `value`                      | `MyContract`        |
 
-2. **Initializer instead of constructor.**
-   The first refactor used a constructor parameter. But `MyContract` is an
-   **upgradeable** contract deployed behind a proxy — and **a constructor runs
-   in the implementation contract's context, not the proxy's storage**. A
-   constructor-set `trustedForwarder` would live on the implementation and read
-   back as `address(0)` through the proxy.
+`Context` and `UUPSUpgradeable` add no sequential storage (UUPS uses the EIP-1967
+slot plus an immutable baked into bytecode).
 
-   So `BaseRelayRecipient` was made `Initializable` and exposes:
-   ```solidity
-   function __BaseRelayRecipient_init(address _trustedForwarder) internal onlyInitializing
-   ```
-   The inheriting contract calls this from *its* initializer, so the forwarder
-   is written to the **proxy's** storage where `_msgSender()` reads it. The
-   `onlyInitializing` modifier guarantees it can only be set during
-   initialization.
-
-### `contracts/MyContract.sol`
-The application contract. It is `Initializable` (upgradeable pattern) and now
-also inherits `BaseRelayRecipient`. Its `initialize` wires up the forwarder:
-```solidity
-function initialize(uint256 _value, address _trustedForwarder) public initializer {
-    __BaseRelayRecipient_init(_trustedForwarder);
-    value = _value;
-}
-```
-The previous constructor-based wiring was removed in favor of this initializer
-for the proxy-storage reason above.
-
-**Storage layout (must stay append-only across upgrades):**
-
-| Slot | Variable           | Source              |
-|------|--------------------|---------------------|
-| 0    | `trustedForwarder` | `BaseRelayRecipient`|
-| 1    | `value`            | `MyContract`        |
-
-### `contracts/ProxyImport.sol`
-A one-line file that imports OpenZeppelin's `TransparentUpgradeableProxy`. Its
-**only purpose** is to make Hardhat compile the proxy + `ProxyAdmin` artifacts
-**locally with our `paris` EVM target**, so the deploy scripts can instantiate
-them. We deliberately do **not** use OpenZeppelin's prebuilt artifacts — see the
-[PUSH0 constraint](#layer-2-the-push0-opcode-evm-compatibility) below. It deploys
-no logic of its own.
+### Upgrade safety built in
+- **`onlyProxy`** on `upgradeTo*`: the upgrade can only run through the proxy
+  (delegatecall), never on the implementation directly.
+- **`_disableInitializers()`** in the implementation constructor: the
+  implementation can never be initialized on its own. Together these block the
+  classic UUPS takeover — which matters on LACChain, whose pre-Cancun EVM still
+  honours `SELFDESTRUCT`.
+- **`proxiableUUID` check** before every upgrade: refuses an implementation that
+  isn't UUPS-compatible / expects a different slot, so you can't brick the proxy.
 
 ---
 
-## Configuration
+## The three LACChain constraints (all learned the hard way)
 
-### `hardhat.config.js`
-- **Solidity compiler `0.8.22`, with `evmVersion` pinned to `"paris"`.** The
-  version bump is required by OpenZeppelin v5.2 proxy contracts (which declare
-  `pragma solidity ^0.8.22`). The `paris` target is **mandatory for LACChain**:
-  it prevents the compiler from emitting the `PUSH0` opcode, which LACChain's EVM
-  does not support (see the PUSH0 section below). All project contracts
-  (`BaseRelayRecipient`, `MyContract`) and the locally-compiled proxy contracts
-  build cleanly under these settings.
-- Two networks are configured, **`testnet`** and **`mainnet`**, both using
-  `@lacchain/gas-model-provider` (`LacchainGasModelProvider`) with the validator
-  node address and signer key.
+Deploying upgradeable contracts on LACChain required solving three independent
+problems. Each is handled in this branch:
 
-> 🔐 **Deployer key:** the deployer private key is read from a **gitignored
-> `.env`** file (`PRIVATE_KEY=0x...`). `hardhat.config.js` contains a small
-> dependency-free loader that reads `.env` before any task runs, so the scripts
-> pick up `process.env.PRIVATE_KEY` automatically. Copy `.env.example` to `.env`
-> and fill in the key. Never commit `.env`.
+### 1. Address prediction — the gas-model provider relays deployments
+The Lacchain gas model relays transactions through the validator node, so a new
+contract is **not** created by the EOA via standard `CREATE`. Tooling that
+predicts the address as `keccak(EOA, nonce)` gets the wrong address.
 
----
+**Fix:** the scripts read the real address from the transaction **receipt**
+(`receipt.contractAddress`) and verify code exists there, instead of trusting the
+predicted address.
 
-## The LACChain deployment workaround (important)
+### 2. The PUSH0 opcode — EVM version
+`PUSH0` (opcode `0x5f`, EIP-3855) was added in the **Shanghai** hardfork. Modern
+solc emits it by default, but **LACChain's EVM does not support it** — such
+bytecode reverts (it surfaces as `missing revert data` at gas estimation).
 
-Two independent adaptations were needed to deploy here. Standard OpenZeppelin
-upgrade tooling **does not work out of the box** with LACChain — first because of
-how the gas-model provider relays transactions, and second because of an EVM
-opcode incompatibility.
+**Fix:** `hardhat.config.js` pins **`evmVersion: "paris"`**, which predates
+Shanghai, so neither our contracts nor the proxy ever contain `PUSH0`. (This is
+also why we cannot use OpenZeppelin's prebuilt proxy artifacts, which are full of
+`PUSH0`.)
 
-### Layer 1: address prediction (the gas-model provider)
-The Lacchain gas model **relays deployment transactions through the validator
-node** rather than creating contracts directly from the EOA. Standard tooling
-predicts a new contract's address as `keccak(deployer_EOA, nonce)` (the CREATE
-formula). Because the *actual* creator is the node — not the EOA — the contract
-lands at a **different address than predicted**.
+### 3. Relayed `msg.sender` — access control must use `_msgSender()`
+This is the subtle one. Because **every** transaction is relayed through the
+network's relay hub, a contract sees `msg.sender` = the **relay hub**, not the
+user's EOA. Access control written against `msg.sender` therefore rejects the
+real owner — `initialize` worked (no sender check) but `upgradeTo` reverted with
+`NotOwner`.
 
-This broke deployment in two ways:
+**Fix:** `Ownable.onlyOwner` compares against **`_msgSender()`**, which
+`BaseRelayRecipient` overrides to recover the original sender from the trusted
+forwarder (EIP-2771). This is exactly what `BaseRelayRecipient` is for — and it
+applies to *all* owner-gated calls, not just app logic.
 
-1. **`@openzeppelin/hardhat-upgrades` (`deployProxy`)** failed with:
-   ```
-   InvalidDeployment: No contract at address 0x7C09…523 (Removed from manifest)
-   ```
-   OZ predicted the implementation address, found no bytecode there, and aborted.
-
-2. **Raw ethers `ContractFactory.deploy()`** then failed at the proxy step with
-   `ERC1967InvalidImplementation(0x…)` — the proxy rejected the implementation
-   address because ethers had *also* handed back the predicted (empty) address.
-
-**The fix:** read the real deployed address from the transaction receipt's
-`contractAddress` field (which the node populates with where it actually
-deployed) instead of trusting the predicted address. The scripts deploy, wait
-for the receipt, take `receipt.contractAddress`, and verify code exists there
-before continuing:
-
-```js
-const contract = await factory.deploy(...args);
-const receipt   = await contract.deploymentTransaction().wait();
-const address   = receipt.contractAddress;       // authoritative, node-assigned
-if ((await provider.getCode(address)) === "0x") throw new Error("no code");
-```
-
-The proxy is then assembled manually rather than via `deployProxy`.
-
-### Layer 2: the PUSH0 opcode (EVM compatibility)
-`PUSH0` (opcode `0x5f`) is an instruction introduced in the Ethereum **Shanghai**
-hardfork (EIP-3855). The Solidity compiler emits it by default when the EVM
-target is `shanghai` or newer (which is the default from solc 0.8.20 onward in
-many setups, and is what OpenZeppelin uses to build the artifacts it ships).
-
-**LACChain's EVM is older than Shanghai and does not implement `PUSH0`.** Any
-bytecode containing it reverts on execution. This surfaced as a deployment that
-*looked* like it should work but failed at gas estimation:
-
-```
-Error: missing revert data (action="estimateGas", ...)
-```
-
-The implementation deployed fine (our own contracts were compiled `paris`), but
-the **`TransparentUpgradeableProxy`** failed — because we had briefly switched to
-OpenZeppelin's **prebuilt** proxy artifacts, which are compiled with solc 0.8.24
-targeting a Shanghai+ EVM and contain ~99 `PUSH0` opcodes. The node could not
-execute that bytecode.
-
-**The fix (two parts):**
-
-1. **Pin `evmVersion: "paris"`** in `hardhat.config.js`. `paris` predates
-   Shanghai, so the compiler never emits `PUSH0`.
-2. **Compile the proxy contracts locally** (via `contracts/ProxyImport.sol`)
-   instead of using OpenZeppelin's prebuilt artifacts — so the proxy bytecode is
-   also produced under the `paris` target. The deploy/upgrade scripts load these
-   locally-compiled artifacts from `artifacts/@openzeppelin/...`.
-
-> **Takeaway:** do not replace the locally-compiled proxy artifacts with
-> `@openzeppelin/contracts/build/contracts/*.json`. Those are PUSH0-laden and
-> will revert on LACChain. `ProxyImport.sol` + `evmVersion: "paris"` exist
-> specifically to avoid this.
+> ⚠️ Because access control relies on the trusted forwarder, the
+> `trustedForwarder` configured at `initialize` must be the **correct forwarder
+> for the target network** (the mainnet forwarder for mainnet, etc.). A wrong
+> forwarder makes `_msgSender()` — and thus every owner-gated call — fail.
 
 ---
 
 ## Scripts
 
-All scripts run with `npx hardhat run scripts/<file> --network <testnet|mainnet>`.
+Run with `npx hardhat run scripts/<file> --network <testnet|mainnet>`.
 
-### `scripts/deploy-manual.js`
-Deploys the system without OZ's address prediction:
-1. Deploys the `MyContract` implementation (no constructor args).
-2. Encodes `initialize(value, trustedForwarder)` as the proxy init data.
-3. Deploys a `TransparentUpgradeableProxy(impl, owner, initData)` — OZ v5 spins
-   up its own `ProxyAdmin` (owned by `owner`) internally.
-4. Reads each address from the receipt and sanity-checks `value()` through the
-   proxy.
+- **`deploy-manual.js`** — deploys the implementation, then `Proxy(impl, initData)`
+  where `initData` = `initialize(value, trustedForwarder, owner)`. Reads addresses
+  from receipts.
+- **`upgrade.js`** — deploys a new implementation and calls `upgradeTo` /
+  `upgradeToAndCall` **through the proxy** as the owner. Verifies ownership first
+  and confirms the new implementation after. Set `PROXY_ADDRESS`,
+  `NEW_IMPL_ARTIFACT`, optional `MIGRATION_CALLDATA`.
+- **`transfer-ownership.js`** — transfers the contract owner (the upgrade
+  authority) through the proxy. Use when rotating keys.
 
-### `scripts/force-import.js`
-Registers the manually-deployed proxy into the `.openzeppelin/` manifest via
-`upgrades.forceImport(...)`. Required because the proxy was **not** created
-through `deployProxy`, so OZ doesn't know about it. Read-only (no transactions);
-after this, `upgrades.validateUpgrade` / `upgradeProxy` can recognize the proxy.
+There is no `force-import` step: without OpenZeppelin there is no manifest to
+register.
 
-### `scripts/upgrade.js`
-A ready-to-go upgrade flow that also works around the Lacchain provider:
-1. **Validates** the new implementation against the current storage layout
-   (`upgrades.validateUpgrade`) — aborts on unsafe changes *before* spending gas.
-2. Deploys the new implementation (receipt-based address).
-3. Resolves the `ProxyAdmin` and verifies the signer is its owner.
-4. Upgrades via `ProxyAdmin.upgradeAndCall(proxy, newImpl, migrationData)`.
-5. Confirms the proxy's new implementation address.
-
-Configure `NEW_IMPL_ARTIFACT` and (optionally) `MIGRATION_CALLDATA` at the top
-of the file for the new version. Keep storage append-only and add new state via
-a `reinitializer`.
-
-### `scripts/transfer-ownership.js`
-Transfers ownership of the proxy's `ProxyAdmin` to a new account. Use this when
-**rotating the deployer key** (the original key was exposed and should be treated
-as compromised): run it with the old key as the signer to hand control to the new
-account, then update `PRIVATE_KEY` in `.env`. Set `NEW_OWNER` at the top first;
-the script verifies the signer is the current owner and confirms the new owner
-after the transfer.
+> ⚠️ **No automated storage-layout validation.** OpenZeppelin's
+> `validateUpgrade` is gone with the dependency. Keep the storage layout
+> **append-only** by hand (never reorder/remove existing variables; add new state
+> only at the end, via a `reinitializer`).
 
 ---
 
 ## Deployed addresses (LACChain mainnet)
 
-| Role                | Address                                      |
-|---------------------|----------------------------------------------|
-| **Proxy** (use this)| `0xbACfDa212f9989D3A2c75108Fe9D96638ACdceaF` |
-| Implementation      | `0x3dCc104300D42638C623eD289cC178a2D3D1082B` |
-| Proxy admin owner   | `0xB75F7d6d206E6939F48b3eE13458666d74c40716` |
-| Trusted forwarder   | `0xEAA5420AF59305c5ecacCB38fcDe70198001d147` |
+Verified end-to-end on mainnet (deploy → upgrade → state preserved):
 
-The proxy is registered in `.openzeppelin/unknown-648541.json` for future
-upgrades.
+| Role | Address |
+|------|---------|
+| **Proxy** (use this)  | `0xC8CFaD92C0CAa02a4C474B9e557Bd5FB00F2FfA9` |
+| Implementation (current) | `0x3c641b0B138bd07a18De1dC2F593A308ebdA7995` |
+| Owner (upgrade authority) | `0xB75F7d6d206E6939F48b3eE13458666d74c40716` |
+| Trusted forwarder | `0xEAA5420AF59305c5ecacCB38fcDe70198001d147` |
 
 ---
 
@@ -237,81 +146,48 @@ npm install
 cp .env.example .env        # then set PRIVATE_KEY=0x... in .env
 npx hardhat compile
 
-# Validate end-to-end on testnet FIRST (see note below)
-npx hardhat run scripts/deploy-manual.js --network testnet
-
-# First-time deploy (only once the testnet run succeeds)
+# Deploy
 npx hardhat run scripts/deploy-manual.js --network mainnet
-
-# Register the proxy with OpenZeppelin tooling (once)
-npx hardhat run scripts/force-import.js --network mainnet
 
 # Later, to upgrade
 #   1. edit MyContract.sol (append-only storage)
 #   2. npx hardhat compile
-#   3. set NEW_IMPL_ARTIFACT / MIGRATION_CALLDATA in scripts/upgrade.js
+#   3. set PROXY_ADDRESS / NEW_IMPL_ARTIFACT / MIGRATION_CALLDATA in scripts/upgrade.js
 npx hardhat run scripts/upgrade.js --network mainnet
 ```
 
-> 💡 **Always test on `testnet` before deploying to `mainnet`.** Each deploy
-> attempt publishes the implementation contract **before** the proxy succeeds,
-> and on-chain bytecode is **immutable** — failed or repeated mainnet attempts
-> leave orphaned implementation contracts that can never be removed (no
-> `SELFDESTRUCT` in the contract, and EIP-6780 disables it anyway). They're
-> harmless (no funds, unreferenced) but permanent. Validating on `testnet` first
-> keeps mainnet free of this cruft and confirms the full flow — including the
-> PUSH0/`paris` and address-prediction workarounds — actually works.
-
-## Security & key rotation
-
-> ⚠️ **The original deployer key must be treated as compromised.** It was
-> committed to source in plaintext and present in early git history. Although the
-> key was later moved to a gitignored `.env` and **purged from git history** (the
-> published repo contains no key), anyone who saw the repo before the rewrite —
-> or any pre-rewrite clone — may still have it. Removing it from history does
-> **not** un-expose it.
-
-Whoever holds the key controls the **`ProxyAdmin`** (current owner
-`0xB75F7d6d206E6939F48b3eE13458666d74c40716`), and therefore every future
-upgrade of the proxy. The implementation holds no funds and no owner-gated
-logic, so rotating `ProxyAdmin` ownership is sufficient to remove the old key's
-authority.
-
-### Key handling rules
-- The private key lives **only** in a local, gitignored `.env` (`PRIVATE_KEY=0x...`).
-- Never commit `.env`, paste the key into source, or share it in chat/tickets.
-- `.env.example` is the only key-related file that is committed (a template).
-
-### Rotating the key
-1. Generate a fresh keypair (e.g. `node address.js`) and save it securely.
-2. Authorize / fund the new account on LACChain as needed.
-3. Set `NEW_OWNER` to the new address in `scripts/transfer-ownership.js`.
-4. With the **old** key still in `.env`, transfer ownership:
-   ```shell
-   npx hardhat run scripts/transfer-ownership.js --network mainnet
-   ```
-   The script verifies the signer is the current owner and confirms the new
-   owner after the transaction.
-5. Replace `PRIVATE_KEY` in `.env` with the **new** key. All other scripts
-   (`upgrade.js`, etc.) now act as the new owner.
-6. Retire the old key everywhere it was used.
+> 💡 Each deploy publishes the implementation before the proxy; failed or
+> repeated attempts leave **permanent orphaned implementation contracts**
+> on-chain (immutable bytecode, no `SELFDESTRUCT` in the contract). They are
+> harmless but cannot be removed. Test on `testnet` first when you can — though
+> note testnet needs the correct **testnet** trusted forwarder for owner-gated
+> calls to work (see constraint #3).
 
 ---
+
+## Security & key handling
+
+- The deployer private key lives **only** in a gitignored `.env`
+  (`PRIVATE_KEY=0x...`), loaded by `hardhat.config.js`. Never commit it.
+- The contract **owner is the sole upgrade authority**. Protect that key as you
+  would any admin key, and use `scripts/transfer-ownership.js` to rotate it.
 
 ## Repository layout
 
 ```
 contracts/
-  BaseRelayRecipient.sol   EIP-2771 recipient base (initializer-based forwarder)
-  MyContract.sol           App contract, upgradeable, inherits BaseRelayRecipient
-  ProxyImport.sol          Compiles proxy artifacts locally (paris/no PUSH0)
+  Context.sol              _msgSender() provider (EIP-2771 hook point)
+  Initializable.sol        proxy-safe initializer pattern
+  Ownable.sol              owner access control (uses _msgSender)
+  BaseRelayRecipient.sol   EIP-2771 recipient; overrides _msgSender
+  UUPSUpgradeable.sol      minimal UUPS upgrade logic (EIP-1967/1822)
+  Proxy.sol                minimal EIP-1967 proxy (delegatecall, no admin)
+  MyContract.sol           app contract wiring it all together
 scripts/
-  deploy-manual.js         Manual impl + proxy deployment (Lacchain workaround)
-  force-import.js          Register proxy in the OpenZeppelin manifest
-  upgrade.js               Validate + deploy new impl + upgrade via ProxyAdmin
-  transfer-ownership.js    Transfer ProxyAdmin ownership (e.g. on key rotation)
-.openzeppelin/             OpenZeppelin upgrade manifests (deployment state)
+  deploy-manual.js         deploy implementation + proxy (receipt-based)
+  upgrade.js               deploy new impl + upgradeTo through the proxy
+  transfer-ownership.js    transfer the owner / upgrade authority
 hardhat.config.js          Solidity 0.8.22 (evmVersion paris), networks, .env loader
-address.js                 Standalone helper to generate a fresh keypair
-.env.example               Template for the gitignored .env (PRIVATE_KEY)
+address.js                 helper to generate a fresh keypair
+.env.example               template for the gitignored .env (PRIVATE_KEY)
 ```

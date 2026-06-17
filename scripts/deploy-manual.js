@@ -19,7 +19,7 @@ async function main() {
   const nodeAddress = hre.network.config.nodeAddress;
 
   // Contract Owner's Private Key
-  const privateKey = "REDACTED"; // Replace with your private key
+  const privateKey = process.env.PRIVATE_KEY; // loaded from .env via hardhat.config.js
 
   // Expiration far enough out to cover two sequential deployments.
   const expiration_date = new Date().getTime() + 5 * 60 * 1000;

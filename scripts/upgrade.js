@@ -31,7 +31,7 @@ const proxyAdminArtifact = require("../artifacts/@openzeppelin/contracts/proxy/t
 async function main() {
   const yourRPCNode = hre.network.config.url;
   const nodeAddress = hre.network.config.nodeAddress;
-  const privateKey = "REDACTED"; // Replace with your private key
+  const privateKey = process.env.PRIVATE_KEY; // loaded from .env via hardhat.config.js
   const expiration_date = new Date().getTime() + 5 * 60 * 1000;
 
   const provider = new LacchainProvider(yourRPCNode);

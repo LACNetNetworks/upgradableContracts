@@ -84,10 +84,11 @@ It deploys no logic of its own.
   `@lacchain/gas-model-provider` (`LacchainGasModelProvider`) with the validator
   node address and signer key.
 
-> ⚠️ **Security note:** the deployer private key is currently hardcoded in
-> `hardhat.config.js` and in the scripts. For any real use, move it to a
-> gitignored `.env` and read it via `process.env`. Anything committed to git
-> history must be considered exposed.
+> 🔐 **Deployer key:** the deployer private key is read from a **gitignored
+> `.env`** file (`PRIVATE_KEY=0x...`). `hardhat.config.js` contains a small
+> dependency-free loader that reads `.env` before any task runs, so the scripts
+> pick up `process.env.PRIVATE_KEY` automatically. Copy `.env.example` to `.env`
+> and fill in the key. Never commit `.env`.
 
 ---
 
@@ -185,6 +186,7 @@ upgrades.
 
 ```shell
 npm install
+cp .env.example .env        # then set PRIVATE_KEY=0x... in .env
 npx hardhat compile
 
 # First-time deploy
@@ -212,6 +214,7 @@ scripts/
   force-import.js          Register proxy in the OpenZeppelin manifest
   upgrade.js               Validate + deploy new impl + upgrade via ProxyAdmin
 .openzeppelin/             OpenZeppelin upgrade manifests (deployment state)
-hardhat.config.js          Solidity 0.8.22 + LACChain testnet/mainnet networks
+hardhat.config.js          Solidity 0.8.22, LACChain networks, .env loader
 address.js                 Standalone helper to generate a fresh keypair
+.env.example               Template for the gitignored .env (PRIVATE_KEY)
 ```

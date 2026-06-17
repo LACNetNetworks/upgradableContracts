@@ -14,7 +14,7 @@ const PROXY_ADDRESS = "0xbACfDa212f9989D3A2c75108Fe9D96638ACdceaF";
 async function main() {
   const yourRPCNode = hre.network.config.url;
   const nodeAddress = hre.network.config.nodeAddress;
-  const privateKey = "REDACTED"; // Replace with your private key
+  const privateKey = process.env.PRIVATE_KEY; // loaded from .env via hardhat.config.js
   const expiration_date = new Date().getTime() + 5 * 60 * 1000;
 
   const provider = new LacchainProvider(yourRPCNode);

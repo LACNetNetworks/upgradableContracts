@@ -1,13 +1,14 @@
 // SPDX-License-Identifier:MIT
 pragma solidity >=0.8.0 <0.9.0;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "./Initializable.sol";
+import "./Context.sol";
 
 /**
 * A base contract to be inherited by any contract that want to receive relayed transactions
 * A subclass must use "_msgSender()" instead of "msg.sender"
 */
-abstract contract BaseRelayRecipient is Initializable {
+abstract contract BaseRelayRecipient is Initializable, Context {
 
    /*
     * Forwarder singleton we accept calls from
@@ -26,7 +27,7 @@ abstract contract BaseRelayRecipient is Initializable {
     * if the call came through our Relay Hub, return the original sender.
     * should be used in the contract anywhere instead of msg.sender
     */
-   function _msgSender() internal virtual returns (address sender) {
+   function _msgSender() internal virtual override returns (address sender) {
        bytes memory bytesRelayHub;
        (,bytesRelayHub) = trustedForwarder.staticcall(abi.encodeWithSignature("getRelayHub()"));
 

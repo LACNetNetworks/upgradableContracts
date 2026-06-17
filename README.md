@@ -210,6 +210,42 @@ npx hardhat run scripts/force-import.js --network mainnet
 npx hardhat run scripts/upgrade.js --network mainnet
 ```
 
+## Security & key rotation
+
+> ⚠️ **The original deployer key must be treated as compromised.** It was
+> committed to source in plaintext and present in early git history. Although the
+> key was later moved to a gitignored `.env` and **purged from git history** (the
+> published repo contains no key), anyone who saw the repo before the rewrite —
+> or any pre-rewrite clone — may still have it. Removing it from history does
+> **not** un-expose it.
+
+Whoever holds the key controls the **`ProxyAdmin`** (current owner
+`0xB75F7d6d206E6939F48b3eE13458666d74c40716`), and therefore every future
+upgrade of the proxy. The implementation holds no funds and no owner-gated
+logic, so rotating `ProxyAdmin` ownership is sufficient to remove the old key's
+authority.
+
+### Key handling rules
+- The private key lives **only** in a local, gitignored `.env` (`PRIVATE_KEY=0x...`).
+- Never commit `.env`, paste the key into source, or share it in chat/tickets.
+- `.env.example` is the only key-related file that is committed (a template).
+
+### Rotating the key
+1. Generate a fresh keypair (e.g. `node address.js`) and save it securely.
+2. Authorize / fund the new account on LACChain as needed.
+3. Set `NEW_OWNER` to the new address in `scripts/transfer-ownership.js`.
+4. With the **old** key still in `.env`, transfer ownership:
+   ```shell
+   npx hardhat run scripts/transfer-ownership.js --network mainnet
+   ```
+   The script verifies the signer is the current owner and confirms the new
+   owner after the transaction.
+5. Replace `PRIVATE_KEY` in `.env` with the **new** key. All other scripts
+   (`upgrade.js`, etc.) now act as the new owner.
+6. Retire the old key everywhere it was used.
+
+---
+
 ## Repository layout
 
 ```

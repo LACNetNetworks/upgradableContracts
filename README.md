@@ -237,7 +237,10 @@ npm install
 cp .env.example .env        # then set PRIVATE_KEY=0x... in .env
 npx hardhat compile
 
-# First-time deploy
+# Validate end-to-end on testnet FIRST (see note below)
+npx hardhat run scripts/deploy-manual.js --network testnet
+
+# First-time deploy (only once the testnet run succeeds)
 npx hardhat run scripts/deploy-manual.js --network mainnet
 
 # Register the proxy with OpenZeppelin tooling (once)
@@ -249,6 +252,15 @@ npx hardhat run scripts/force-import.js --network mainnet
 #   3. set NEW_IMPL_ARTIFACT / MIGRATION_CALLDATA in scripts/upgrade.js
 npx hardhat run scripts/upgrade.js --network mainnet
 ```
+
+> 💡 **Always test on `testnet` before deploying to `mainnet`.** Each deploy
+> attempt publishes the implementation contract **before** the proxy succeeds,
+> and on-chain bytecode is **immutable** — failed or repeated mainnet attempts
+> leave orphaned implementation contracts that can never be removed (no
+> `SELFDESTRUCT` in the contract, and EIP-6780 disables it anyway). They're
+> harmless (no funds, unreferenced) but permanent. Validating on `testnet` first
+> keeps mainnet free of this cruft and confirms the full flow — including the
+> PUSH0/`paris` and address-prediction workarounds — actually works.
 
 ## Security & key rotation
 

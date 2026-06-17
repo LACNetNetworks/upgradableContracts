@@ -166,6 +166,14 @@ Configure `NEW_IMPL_ARTIFACT` and (optionally) `MIGRATION_CALLDATA` at the top
 of the file for the new version. Keep storage append-only and add new state via
 a `reinitializer`.
 
+### `scripts/transfer-ownership.js`
+Transfers ownership of the proxy's `ProxyAdmin` to a new account. Use this when
+**rotating the deployer key** (the original key was exposed and should be treated
+as compromised): run it with the old key as the signer to hand control to the new
+account, then update `PRIVATE_KEY` in `.env`. Set `NEW_OWNER` at the top first;
+the script verifies the signer is the current owner and confirms the new owner
+after the transfer.
+
 ---
 
 ## Deployed addresses (LACChain mainnet)
@@ -213,6 +221,7 @@ scripts/
   deploy-manual.js         Manual impl + proxy deployment (Lacchain workaround)
   force-import.js          Register proxy in the OpenZeppelin manifest
   upgrade.js               Validate + deploy new impl + upgrade via ProxyAdmin
+  transfer-ownership.js    Transfer ProxyAdmin ownership (e.g. on key rotation)
 .openzeppelin/             OpenZeppelin upgrade manifests (deployment state)
 hardhat.config.js          Solidity 0.8.22, LACChain networks, .env loader
 address.js                 Standalone helper to generate a fresh keypair
